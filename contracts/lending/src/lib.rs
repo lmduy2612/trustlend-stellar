@@ -76,6 +76,38 @@ impl ReferralClient {
     }
 }
 
+/// Thin client for the BorrowerReputationContract (Issue #348).
+struct ReputationClient(Address);
+impl ReputationClient {
+    fn new(_env: &Env, address: &Address) -> Self {
+        Self(address.clone())
+    }
+    fn calculate_interest_rate(&self, env: &Env, borrower: &Address) -> Option<u32> {
+        let args: Vec<Val> = vec![env, borrower.into_val(env)];
+        let result = env.try_invoke_contract::<u32, Val>(
+            &self.0,
+            &Symbol::new(env, "calculate_interest_rate"),
+            args,
+        );
+        match result {
+            Ok(Ok(rate)) => Some(rate),
+            _ => None,
+        }
+    }
+    fn calculate_max_loan(&self, env: &Env, borrower: &Address) -> Option<i128> {
+        let args: Vec<Val> = vec![env, borrower.into_val(env)];
+        let result = env.try_invoke_contract::<i128, Val>(
+            &self.0,
+            &Symbol::new(env, "calculate_max_loan"),
+            args,
+        );
+        match result {
+            Ok(Ok(max_loan)) => Some(max_loan),
+            _ => None,
+        }
+    }
+}
+
 #[contractclient(name = "FlashLoanReceiverClient")]
 pub trait FlashLoanReceiver {
     fn execute_operation(
@@ -246,9 +278,16 @@ pub enum DataKey {
     LoanReputationTier(u32),
     /// Referral Rewards contract address (Issue #266)
     ReferralContract,
+    /// Borrower Reputation contract address (Issue #348)
+    ReputationContract,
     /// Grace period start timestamp for undercollateralized loans (Issue #157)
     GracePeriodStart(u32),
 }
+
+/// Minimum allowed interest rate floor in basis points (1.00% = 100 bps, Issue #348).
+const MIN_INTEREST_RATE_BPS: u32 = 100;
+/// Maximum allowed interest rate ceiling in basis points (100.00% = 10,000 bps, Issue #348).
+const MAX_INTEREST_RATE_BPS: u32 = 10_000;
 
 /// Default platform fee = 1 % of interest (100 bps) until governance changes it.
 const DEFAULT_PLATFORM_FEE_BPS: u32 = 100;
@@ -522,6 +561,23 @@ impl LendingContract {
 
     pub fn get_referral_contract(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::ReferralContract)
+    }
+
+    /// Set the Borrower Reputation contract address (admin only, Issue #348).
+    pub fn set_reputation_contract(env: Env, admin: Address, reputation: Address) {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::ReputationContract, &reputation);
+        env.events().publish(
+            (symbol_short!("lending"), Symbol::new(&env, "reputation")),
+            reputation,
+        );
+    }
+
+    pub fn get_reputation_contract(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::ReputationContract)
     }
 
     /// Whitelist a new collateral asset ("adding pools"). Multisig-gated —
@@ -1113,6 +1169,12 @@ impl LendingContract {
         if amount < MIN_BORROW_AMOUNT {
             panic!("Loan amount below minimum borrow threshold");
         }
+        if interest_rate_bps < MIN_INTEREST_RATE_BPS {
+            panic!("Interest rate below minimum protocol bound");
+        }
+        if interest_rate_bps > MAX_INTEREST_RATE_BPS {
+            panic!("Interest rate exceeds maximum protocol bound");
+        }
         if amount > max_loan_amount {
             panic!("Amount exceeds reputation-based limit");
         }
@@ -1124,6 +1186,25 @@ impl LendingContract {
         }
         if collateral_entries.is_empty() {
             panic!("At least one collateral entry is required");
+        }
+
+        // Validate against BorrowerReputationContract if configured (Issue #348)
+        if let Some(rep_address) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::ReputationContract)
+        {
+            let rep_client = ReputationClient::new(&env, &rep_address);
+            if let Some(min_rate) = rep_client.calculate_interest_rate(&env, &borrower) {
+                if interest_rate_bps < min_rate {
+                    panic!("Interest rate below reputation rate");
+                }
+            }
+            if let Some(rep_max_loan) = rep_client.calculate_max_loan(&env, &borrower) {
+                if amount > rep_max_loan || max_loan_amount > rep_max_loan {
+                    panic!("Amount exceeds reputation-based limit");
+                }
+            }
         }
 
         // Validate that all collateral assets are whitelisted

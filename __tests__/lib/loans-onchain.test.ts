@@ -244,8 +244,50 @@ describe("verifyOnchainLoanRequest", () => {
     mocks.readLoan.mockResolvedValue(onchainLoan({ status: "Pending", durationDays: 60 }));
     expect(await verifyOnchainLoanRequest({ db: db(), ...params })).toMatchObject({ ok: false, status: 422 });
 
+    mocks.readLoan.mockResolvedValue(onchainLoan({ status: "Pending", interestRateBps: 0 }));
+    expect(
+      await verifyOnchainLoanRequest({ db: db(), ...params, expectedInterestRateBps: 1200 })
+    ).toMatchObject({ ok: false, status: 422 });
+
     mocks.readLoan.mockResolvedValue(onchainLoan({ status: "Active" }));
     expect(await verifyOnchainLoanRequest({ db: db(), ...params })).toMatchObject({ ok: false, status: 409 });
+  });
+
+  it("rejects an on-chain loan request when interest_rate_bps does not match quoted APR", async () => {
+    const db = createFakeDb();
+    db.queue([]);
+    mocks.verifyInvocation.mockResolvedValue({ ok: true, returnValue: 5 });
+    mocks.readLoan.mockResolvedValue(onchainLoan({ status: "Pending", interestRateBps: 0 }));
+
+    const res = await verifyOnchainLoanRequest({
+      db,
+      ...params,
+      expectedInterestRateBps: 1200,
+    });
+
+    expect(res).toMatchObject({
+      ok: false,
+      status: 422,
+      reason: "On-chain loan interest rate (0 bps) does not match quoted APR (1200 bps)",
+    });
+  });
+
+  it("accepts an on-chain loan request when interest_rate_bps matches quoted APR", async () => {
+    const db = createFakeDb();
+    db.queue([]);
+    mocks.verifyInvocation.mockResolvedValue({ ok: true, returnValue: 5 });
+    mocks.readLoan.mockResolvedValue(onchainLoan({ status: "Pending", interestRateBps: 1200 }));
+
+    const res = await verifyOnchainLoanRequest({
+      db,
+      ...params,
+      expectedInterestRateBps: 1200,
+    });
+
+    expect(res).toMatchObject({
+      ok: true,
+      metadata: { onchain_loan_id: 5, onchain_request_tx: HASH, onchain_status: "Pending" },
+    });
   });
 
   it("rejects an on-chain loan that is already linked to another row", async () => {

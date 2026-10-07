@@ -2802,3 +2802,182 @@ fn test_sweep_amount_exceeding_balance_rejected() {
     // Attempting to sweep 200 tokens must fail
     client.sweep_tokens(&admin, &unsupported_token, &recipient, &200);
 }
+
+// ─── Interest rate and borrower reputation validations (Issue #348) ───────────
+
+#[test]
+#[should_panic(expected = "Interest rate below minimum protocol bound")]
+fn test_create_loan_request_zero_interest_rate_rejected() {
+    let (env, contract_id, _admin, borrower, collateral_asset) = setup();
+    let client = LendingContractClient::new(&env, &contract_id);
+
+    client.create_loan_request(
+        &borrower,
+        &create_request_struct(
+            &env,
+            1_000_0000000,
+            30,
+            0,
+            100_000_0000000,
+            &collateral_asset,
+            10_000_0000000,
+            InterestRateModel::Fixed,
+        ),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Interest rate below minimum protocol bound")]
+fn test_create_loan_request_below_min_rate_rejected() {
+    let (env, contract_id, _admin, borrower, collateral_asset) = setup();
+    let client = LendingContractClient::new(&env, &contract_id);
+
+    // 50 bps < 100 bps floor
+    client.create_loan_request(
+        &borrower,
+        &create_request_struct(
+            &env,
+            1_000_0000000,
+            30,
+            50,
+            100_000_0000000,
+            &collateral_asset,
+            10_000_0000000,
+            InterestRateModel::Fixed,
+        ),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Interest rate exceeds maximum protocol bound")]
+fn test_create_loan_request_above_max_rate_rejected() {
+    let (env, contract_id, _admin, borrower, collateral_asset) = setup();
+    let client = LendingContractClient::new(&env, &contract_id);
+
+    // 10001 bps > 10000 bps ceiling
+    client.create_loan_request(
+        &borrower,
+        &create_request_struct(
+            &env,
+            1_000_0000000,
+            30,
+            10001,
+            100_000_0000000,
+            &collateral_asset,
+            10_000_0000000,
+            InterestRateModel::Fixed,
+        ),
+    );
+}
+
+#[test]
+fn test_set_reputation_contract() {
+    let (env, contract_id, admin, _borrower, _collateral_asset) = setup();
+    let client = LendingContractClient::new(&env, &contract_id);
+    let rep_id = Address::generate(&env);
+
+    assert_eq!(client.get_reputation_contract(), None);
+    client.set_reputation_contract(&admin, &rep_id);
+    assert_eq!(client.get_reputation_contract(), Some(rep_id));
+}
+
+#[test]
+fn test_set_reputation_contract_non_admin_rejected() {
+    let (env, contract_id, _admin, borrower, _collateral_asset) = setup();
+    let client = LendingContractClient::new(&env, &contract_id);
+    let rep_id = Address::generate(&env);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.set_reputation_contract(&borrower, &rep_id);
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+#[should_panic(expected = "Interest rate below reputation rate")]
+fn test_create_loan_request_rejects_rate_below_reputation_tier() {
+    let (env, contract_id, admin, borrower, collateral_asset) = setup();
+    let client = LendingContractClient::new(&env, &contract_id);
+
+    let rep_id = env.register(borrower_reputation::BorrowerReputationContract, ());
+    let rep_client = borrower_reputation::BorrowerReputationContractClient::new(&env, &rep_id);
+    rep_client.initialize(&admin);
+    rep_client.init_borrower(&borrower);
+    client.set_reputation_contract(&admin, &rep_id);
+
+    // A borrower with Tier::None gets a reputation interest rate of 1500 bps (15%).
+    // Trying to pass 1000 bps (< 1500 bps) must be rejected.
+    client.create_loan_request(
+        &borrower,
+        &create_request_struct(
+            &env,
+            1_000_0000000,
+            30,
+            1000,
+            100_000_0000000,
+            &collateral_asset,
+            10_000_0000000,
+            InterestRateModel::Fixed,
+        ),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Amount exceeds reputation-based limit")]
+fn test_create_loan_request_rejects_amount_exceeding_reputation_max_loan() {
+    let (env, contract_id, admin, borrower, collateral_asset) = setup();
+    let client = LendingContractClient::new(&env, &contract_id);
+
+    let rep_id = env.register(borrower_reputation::BorrowerReputationContract, ());
+    let rep_client = borrower_reputation::BorrowerReputationContractClient::new(&env, &rep_id);
+    rep_client.initialize(&admin);
+    rep_client.init_borrower(&borrower);
+    client.set_reputation_contract(&admin, &rep_id);
+
+    // Tier::None has max loan of 1000 XLM = 1_000_0000000 stroops.
+    // Requesting 2000 XLM must fail reputation limit even with sufficient collateral.
+    client.create_loan_request(
+        &borrower,
+        &create_request_struct(
+            &env,
+            2_000_0000000,
+            30,
+            1500,
+            100_000_0000000,
+            &collateral_asset,
+            10_000_0000000,
+            InterestRateModel::Fixed,
+        ),
+    );
+}
+
+#[test]
+fn test_create_loan_request_succeeds_with_reputation_contract() {
+    let (env, contract_id, admin, borrower, collateral_asset) = setup();
+    let client = LendingContractClient::new(&env, &contract_id);
+
+    let rep_id = env.register(borrower_reputation::BorrowerReputationContract, ());
+    let rep_client = borrower_reputation::BorrowerReputationContractClient::new(&env, &rep_id);
+    rep_client.initialize(&admin);
+    rep_client.init_borrower(&borrower);
+    client.set_reputation_contract(&admin, &rep_id);
+
+    // Tier::None requires rate >= 1500 bps and amount <= 1000 XLM.
+    let loan_id = client.create_loan_request(
+        &borrower,
+        &create_request_struct(
+            &env,
+            500_0000000,
+            30,
+            1500,
+            1_000_0000000,
+            &collateral_asset,
+            10_000_0000000,
+            InterestRateModel::Fixed,
+        ),
+    );
+    assert_eq!(loan_id, 1);
+    let loan = client.get_loan(&loan_id);
+    assert_eq!(loan.amount, 500_0000000);
+    assert_eq!(loan.interest_rate_bps, 1500);
+}
