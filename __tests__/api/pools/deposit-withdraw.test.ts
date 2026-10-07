@@ -153,26 +153,32 @@ describe("POST /api/pools/withdraw", () => {
     expect(mockSync).toHaveBeenCalledWith(db, POOL_ID);
   });
 
-  it("refuses the withdrawal (and writes nothing) when the server cannot sign the payout", async () => {
+  it("refuses the withdrawal and rolls back the reserved position when the server cannot sign the payout", async () => {
     const db = createFakeDb();
     queueWithdrawReads(db);
+    db.queue([]); // pre-payout position reservation update
+    db.queue([]); // rollback update on failure
     mockGetDb.mockReturnValue(db);
     mockPayout.mockRejectedValue(new PlatformWalletError("PLATFORM_WALLET_SECRET is not configured"));
 
     const res = await withdraw(request("/api/pools/withdraw", { positionId: POSITION_ID, amount: 40 }));
     expect(res.status).toBe(503);
     expect((await res.json()).error).toMatch(/PLATFORM_WALLET_SECRET/);
-    expect(db.calls.some((c) => c.method === "update" || c.method === "insert")).toBe(false);
+    expect(db.calls.filter((c) => c.method === "update")).toHaveLength(2);
+    expect(db.calls.some((c) => c.method === "insert")).toBe(false);
   });
 
-  it("returns 502 when the Stellar submission itself fails", async () => {
+  it("returns 502 and rolls back the reserved position when the Stellar submission itself fails", async () => {
     const db = createFakeDb();
     queueWithdrawReads(db);
+    db.queue([]); // pre-payout position reservation update
+    db.queue([]); // rollback update on failure
     mockGetDb.mockReturnValue(db);
     mockPayout.mockRejectedValue(new Error("tx_bad_seq"));
 
     const res = await withdraw(request("/api/pools/withdraw", { positionId: POSITION_ID, amount: 40 }));
     expect(res.status).toBe(502);
-    expect(db.calls.some((c) => c.method === "update")).toBe(false);
+    expect(db.calls.filter((c) => c.method === "update")).toHaveLength(2);
+    expect(db.calls.some((c) => c.method === "insert")).toBe(false);
   });
 });

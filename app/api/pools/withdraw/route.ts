@@ -9,18 +9,47 @@ import { PlatformWalletError, payoutFromPlatformWallet } from "@/lib/stellar/pla
 import { PAYMENT_MEMO } from "@/lib/stellar/verify-payment";
 import { isRedirectError } from "next/dist/client/components/redirect-error";
 
+// In-flight withdrawal tracker to block concurrent requests on the same position
+const inFlightPositions = new Set<string>();
+
+// In-memory idempotency cache: key -> { status, response, statusCode, timestamp }
+interface IdempotencyRecord {
+  status: "pending" | "completed";
+  response?: Record<string, unknown>;
+  statusCode?: number;
+  timestamp: number;
+}
+const idempotencyStore = new Map<string, IdempotencyRecord>();
+const IDEMPOTENCY_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+function cleanupIdempotencyStore() {
+  const now = Date.now();
+  for (const [key, record] of idempotencyStore.entries()) {
+    if (now - record.timestamp > IDEMPOTENCY_TTL_MS) {
+      idempotencyStore.delete(key);
+    }
+  }
+}
+
+export function _resetWithdrawStateForTesting() {
+  inFlightPositions.clear();
+  idempotencyStore.clear();
+}
+
 /**
  * POST /api/pools/withdraw
  *
- * Body: { positionId, amount }
+ * Body: { positionId, amount, idempotencyKey? }
+ * Headers: x-idempotency-key? or idempotency-key?
  *
  * Pays `amount` XLM from the platform wallet back to the lender's wallet
- * (server-signed with PLATFORM_WALLET_SECRET), then reduces the position and
- * pool liquidity and mirrors the new totals to the PooledLendingContract. A
- * withdrawal is refused outright when the server cannot sign the payout —
- * previously the position was reduced without any XLM moving.
+ * (server-signed with PLATFORM_WALLET_SECRET), with atomic pre-payout state
+ * transition and rollback on failure to prevent double-withdrawal race conditions.
  */
 export async function POST(request: NextRequest) {
+  let acquiredPositionId: string | null = null;
+  let activeIdempotencyKey: string | null = null;
+
   try {
     const rateLimitResponse = await enforceRouteRateLimit(request);
     if (rateLimitResponse) {
@@ -28,7 +57,13 @@ export async function POST(request: NextRequest) {
     }
 
     const { user } = await requireAuthenticatedUser("lender");
-    const { positionId, amount } = await request.json();
+    let body: Record<string, unknown> = {};
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+    const { positionId, amount } = body as { positionId?: string; amount?: number };
 
     if (!positionId || !amount || amount <= 0 || !Number.isFinite(amount)) {
       return NextResponse.json({ error: "Invalid request" }, { status: 400 });
@@ -36,6 +71,41 @@ export async function POST(request: NextRequest) {
     if (amount > 1_000_000) {
       return NextResponse.json({ error: "Amount exceeds maximum allowed" }, { status: 400 });
     }
+
+    // ── Idempotency Check ────────────────────────────────────────────────────
+    const idempotencyKey =
+      request.headers.get("x-idempotency-key") ||
+      request.headers.get("idempotency-key") ||
+      (typeof body.idempotencyKey === "string" ? body.idempotencyKey : undefined);
+
+    if (idempotencyKey) {
+      cleanupIdempotencyStore();
+      const existing = idempotencyStore.get(idempotencyKey);
+      if (existing) {
+        if (existing.status === "pending") {
+          return NextResponse.json(
+            { error: "A withdrawal request with this idempotency key is already in progress" },
+            { status: 409 }
+          );
+        }
+        if (existing.status === "completed" && existing.response) {
+          return NextResponse.json(existing.response, { status: existing.statusCode ?? 200 });
+        }
+      }
+      activeIdempotencyKey = idempotencyKey;
+      idempotencyStore.set(idempotencyKey, { status: "pending", timestamp: Date.now() });
+    }
+
+    // ── Concurrency Lock ─────────────────────────────────────────────────────
+    if (inFlightPositions.has(positionId)) {
+      if (activeIdempotencyKey) idempotencyStore.delete(activeIdempotencyKey);
+      return NextResponse.json(
+        { error: "A withdrawal for this position is already in progress" },
+        { status: 409 }
+      );
+    }
+    inFlightPositions.add(positionId);
+    acquiredPositionId = positionId;
 
     const db = getDb();
     if (!db) {
@@ -105,26 +175,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const withdrawalAmount = Number(Number(amount).toFixed(7));
-    let payout: { hash: string; source: string };
-    try {
-      payout = await payoutFromPlatformWallet({
-        destination,
-        amountXlm: withdrawalAmount,
-        memo: PAYMENT_MEMO.withdraw(String(positionId)),
-      });
-    } catch (payoutError) {
-      if (payoutError instanceof PlatformWalletError) {
-        return NextResponse.json(
-          { error: `Withdrawals are unavailable: ${payoutError.message}` },
-          { status: 503 }
-        );
-      }
-      const message = payoutError instanceof Error ? payoutError.message : String(payoutError);
-      return NextResponse.json({ error: `Payout failed: ${message}` }, { status: 502 });
-    }
-
-    // Update position
+    // ── Pre-Payout State Transition (Atomic Reservation) ───────────────────
     const newPrincipal = position.principal_amount - amount;
     await db
       .update(poolPositions)
@@ -135,6 +186,44 @@ export async function POST(request: NextRequest) {
         closedAt: newPrincipal === 0 ? new Date() : null,
       })
       .where(eq(poolPositions.id, positionId));
+
+    const withdrawalAmount = Number(Number(amount).toFixed(7));
+    let payout: { hash: string; source: string };
+    try {
+      payout = await payoutFromPlatformWallet({
+        destination,
+        amountXlm: withdrawalAmount,
+        memo: PAYMENT_MEMO.withdraw(String(positionId)),
+      });
+    } catch (payoutError) {
+      // ── Roll back state transition on failure ───────────────────────────
+      try {
+        await db
+          .update(poolPositions)
+          .set({
+            principalAmount: String(position.principal_amount),
+            withdrawnAmount: String(position.withdrawn_amount),
+            status: "active",
+            closedAt: null,
+          })
+          .where(eq(poolPositions.id, positionId));
+      } catch (rollbackErr) {
+        console.error("Failed to roll back position state transition:", rollbackErr);
+      }
+
+      if (activeIdempotencyKey) {
+        idempotencyStore.delete(activeIdempotencyKey);
+      }
+
+      if (payoutError instanceof PlatformWalletError) {
+        return NextResponse.json(
+          { error: `Withdrawals are unavailable: ${payoutError.message}` },
+          { status: 503 }
+        );
+      }
+      const message = payoutError instanceof Error ? payoutError.message : String(payoutError);
+      return NextResponse.json({ error: `Payout failed: ${message}` }, { status: 502 });
+    }
 
     // Update pool liquidity (SQL-side decrement)
     await db
@@ -160,21 +249,33 @@ export async function POST(request: NextRequest) {
     // ── Mirror pool totals to the PooledLendingContract ──────────────────────
     const onchain = await syncPoolOnchain(db, position.pool_id);
 
-    return NextResponse.json(
-      {
-        message: "Withdrawal successful",
-        withdrawalAmount: amount,
-        txHash: payout.hash,
-        onchain,
-        explorerUrl: `https://stellar.expert/explorer/testnet/tx/${payout.hash}`,
-      },
-      { status: 200 }
-    );
+    const successResponse = {
+      message: "Withdrawal successful",
+      withdrawalAmount: amount,
+      txHash: payout.hash,
+      onchain,
+      explorerUrl: `https://stellar.expert/explorer/testnet/tx/${payout.hash}`,
+    };
+
+    if (activeIdempotencyKey) {
+      idempotencyStore.set(activeIdempotencyKey, {
+        status: "completed",
+        response: successResponse,
+        statusCode: 200,
+        timestamp: Date.now(),
+      });
+    }
+
+    return NextResponse.json(successResponse, { status: 200 });
   } catch (error) {
     if (isRedirectError(error)) {
       throw error;
     }
     console.error("Withdrawal error:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  } finally {
+    if (acquiredPositionId) {
+      inFlightPositions.delete(acquiredPositionId);
+    }
   }
 }
