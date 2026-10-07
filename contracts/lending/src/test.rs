@@ -11,6 +11,26 @@ use soroban_sdk::{
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+fn whitelist_and_price_asset(
+    env: &Env,
+    client: &LendingContractClient,
+    admin: &Address,
+    asset: &Address,
+    price: i128,
+) {
+    client.whitelist_asset(admin, asset);
+    client.set_asset_collateral_config(
+        admin,
+        asset,
+        &AssetCollateralConfig {
+            collateral_factor_bps: DEFAULT_COLLATERAL_FACTOR_BPS,
+            has_price_oracle: true,
+            volatility_bps: 0,
+        },
+    );
+    client.set_asset_oracle_prices(admin, asset, &vec![env, price]);
+}
+
 fn setup() -> (Env, Address, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
@@ -28,7 +48,7 @@ fn setup() -> (Env, Address, Address, Address, Address) {
     client.set_multisig_admin(&admin, &admin);
 
     let collateral_asset = Address::generate(&env);
-    client.whitelist_asset(&admin, &collateral_asset);
+    whitelist_and_price_asset(&env, &client, &admin, &collateral_asset, PRICE_PRECISION);
 
     (env, contract_id, admin, borrower, collateral_asset)
 }
@@ -197,7 +217,7 @@ fn test_no_overflow_at_maximum_valid_inputs() {
         &collateral_asset,
         &AssetCollateralConfig {
             collateral_factor_bps: 9500,
-            has_price_oracle: false,
+            has_price_oracle: true,
             volatility_bps: 0,
         },
     );
@@ -666,7 +686,7 @@ fn setup_with_multisig() -> (Env, Address, Address, Address, Address, Address, A
     client.setup_multisig(&admin, &admins, &2);
 
     let collateral_asset = Address::generate(&env);
-    client.whitelist_asset(&admin, &collateral_asset);
+    whitelist_and_price_asset(&env, &client, &admin, &collateral_asset, PRICE_PRECISION);
 
     (
         env,
@@ -1709,8 +1729,10 @@ fn test_deposit_collateral_non_whitelisted_asset_rejected() {
 /// Withdraw collateral from a single asset reduces balance.
 #[test]
 fn test_withdraw_collateral_basic() {
-    let (env, contract_id, _admin, borrower, asset_a, _asset_b) = setup_multi_collateral();
+    let (env, contract_id, admin, borrower, asset_a, _asset_b) = setup_multi_collateral();
     let client = LendingContractClient::new(&env, &contract_id);
+
+    whitelist_and_price_asset(&env, &client, &admin, &asset_a, PRICE_PRECISION);
 
     client.deposit_collateral(&borrower, &asset_a, &5_000_0000000);
     client.withdraw_collateral(&borrower, &asset_a, &2_000_0000000);
@@ -1723,8 +1745,11 @@ fn test_withdraw_collateral_basic() {
 /// Withdrawing the full amount removes the entry entirely.
 #[test]
 fn test_withdraw_collateral_full_amount_removes_entry() {
-    let (env, contract_id, _admin, borrower, asset_a, asset_b) = setup_multi_collateral();
+    let (env, contract_id, admin, borrower, asset_a, asset_b) = setup_multi_collateral();
     let client = LendingContractClient::new(&env, &contract_id);
+
+    whitelist_and_price_asset(&env, &client, &admin, &asset_a, PRICE_PRECISION);
+    whitelist_and_price_asset(&env, &client, &admin, &asset_b, PRICE_PRECISION);
 
     client.deposit_collateral(&borrower, &asset_a, &5_000_0000000);
     client.deposit_collateral(&borrower, &asset_b, &3_000_0000000);
@@ -1795,8 +1820,11 @@ fn test_deposit_collateral_blocked_when_paused() {
 /// Get borrowing power with no active loans allows full withdrawal.
 #[test]
 fn test_withdraw_collateral_allowed_with_no_active_loans() {
-    let (env, contract_id, _admin, borrower, asset_a, asset_b) = setup_multi_collateral();
+    let (env, contract_id, admin, borrower, asset_a, asset_b) = setup_multi_collateral();
     let client = LendingContractClient::new(&env, &contract_id);
+
+    whitelist_and_price_asset(&env, &client, &admin, &asset_a, PRICE_PRECISION);
+    whitelist_and_price_asset(&env, &client, &admin, &asset_b, PRICE_PRECISION);
 
     client.deposit_collateral(&borrower, &asset_a, &5_000_0000000);
     client.deposit_collateral(&borrower, &asset_b, &3_000_0000000);
@@ -1822,14 +1850,17 @@ fn test_get_user_collateral_entries_empty_for_new_borrower() {
 /// Get total collateral value for a borrower with deposits.
 #[test]
 fn test_get_total_collateral_value() {
-    let (env, contract_id, _admin, borrower, asset_a, asset_b) = setup_multi_collateral();
+    let (env, contract_id, admin, borrower, asset_a, asset_b) = setup_multi_collateral();
     let client = LendingContractClient::new(&env, &contract_id);
+
+    whitelist_and_price_asset(&env, &client, &admin, &asset_a, PRICE_PRECISION);
+    whitelist_and_price_asset(&env, &client, &admin, &asset_b, PRICE_PRECISION);
 
     client.deposit_collateral(&borrower, &asset_a, &10_000_0000000);
     client.deposit_collateral(&borrower, &asset_b, &20_000_0000000);
 
     let total_value = client.get_total_collateral_value(&borrower);
-    // Without oracle, each unit is valued at 1.0 base asset unit
+    // With active oracle, each unit is valued at 1.0 base asset unit
     // Total = 10_000_0000000 + 20_000_0000000 = 30_000_0000000
     assert_eq!(total_value, 30_000_0000000);
 }
@@ -1850,16 +1881,17 @@ fn test_get_borrowing_power_single_asset() {
     let (env, contract_id, admin, borrower, asset_a, _asset_b) = setup_multi_collateral();
     let client = LendingContractClient::new(&env, &contract_id);
 
-    // Set a specific collateral config: 80% LTV
+    // Set a specific collateral config: 80% LTV with active oracle
     client.set_asset_collateral_config(
         &admin,
         &asset_a,
         &AssetCollateralConfig {
             collateral_factor_bps: 8000, // 80% LTV
-            has_price_oracle: false,
+            has_price_oracle: true,
             volatility_bps: 500, // 5% vol
         },
     );
+    client.set_asset_oracle_prices(&admin, &asset_a, &vec![&env, PRICE_PRECISION]);
 
     client.deposit_collateral(&borrower, &asset_a, &10_000_0000000);
 
@@ -1874,19 +1906,30 @@ fn test_get_borrowing_power_multiple_assets() {
     let (env, contract_id, admin, borrower, asset_a, asset_b) = setup_multi_collateral();
     let client = LendingContractClient::new(&env, &contract_id);
 
-    // Asset A: 75% LTV (default)
+    // Asset A: 75% LTV (default) with active oracle
+    client.set_asset_collateral_config(
+        &admin,
+        &asset_a,
+        &AssetCollateralConfig {
+            collateral_factor_bps: 7500,
+            has_price_oracle: true,
+            volatility_bps: 0,
+        },
+    );
+    client.set_asset_oracle_prices(&admin, &asset_a, &vec![&env, PRICE_PRECISION]);
     client.deposit_collateral(&borrower, &asset_a, &10_000_0000000);
 
-    // Asset B: 50% LTV
+    // Asset B: 50% LTV with active oracle
     client.set_asset_collateral_config(
         &admin,
         &asset_b,
         &AssetCollateralConfig {
             collateral_factor_bps: 5000, // 50% LTV
-            has_price_oracle: false,
+            has_price_oracle: true,
             volatility_bps: 2000, // 20% vol
         },
     );
+    client.set_asset_oracle_prices(&admin, &asset_b, &vec![&env, PRICE_PRECISION]);
     client.deposit_collateral(&borrower, &asset_b, &10_000_0000000);
 
     let borrowing_power = client.get_borrowing_power(&borrower);
@@ -2119,16 +2162,20 @@ fn test_create_loan_request_with_multi_asset_collateral() {
     let (env, contract_id, admin, borrower, asset_a, asset_b) = setup_multi_collateral();
     let client = LendingContractClient::new(&env, &contract_id);
 
-    // Configure asset B with 50% LTV
+    // Configure asset A with active oracle (default 75% LTV)
+    whitelist_and_price_asset(&env, &client, &admin, &asset_a, PRICE_PRECISION);
+
+    // Configure asset B with 50% LTV and active oracle
     client.set_asset_collateral_config(
         &admin,
         &asset_b,
         &AssetCollateralConfig {
             collateral_factor_bps: 5000, // 50% LTV
-            has_price_oracle: false,
+            has_price_oracle: true,
             volatility_bps: 1000,
         },
     );
+    client.set_asset_oracle_prices(&admin, &asset_b, &vec![&env, PRICE_PRECISION]);
 
     // deposit_collateral on user's vault
     client.deposit_collateral(&borrower, &asset_a, &10_000_0000000); // 7.5K borrowing power
@@ -2231,7 +2278,7 @@ fn test_repayment_calls_loyalty_contract() {
 
     client.initialize(&admin);
     client.set_multisig_admin(&admin, &admin);
-    client.whitelist_asset(&admin, &collateral_asset);
+    whitelist_and_price_asset(&env, &client, &admin, &collateral_asset, PRICE_PRECISION);
 
     // Register and initialise loyalty contract
     let token_id = env
@@ -2326,7 +2373,7 @@ fn test_late_repayment_no_reward() {
 
     client.initialize(&admin);
     client.set_multisig_admin(&admin, &admin);
-    client.whitelist_asset(&admin, &collateral_asset);
+    whitelist_and_price_asset(&env, &client, &admin, &collateral_asset, PRICE_PRECISION);
 
     // Register and initialise loyalty contract
     let token_id = env
@@ -2415,7 +2462,7 @@ fn setup_with_referral() -> (Env, Address, Address, Address, Address, Address, A
 
     client.initialize(&admin);
     client.set_multisig_admin(&admin, &admin);
-    client.whitelist_asset(&admin, &collateral_asset);
+    whitelist_and_price_asset(&env, &client, &admin, &collateral_asset, PRICE_PRECISION);
 
     let token_id = env
         .register_stellar_asset_contract_v2(admin.clone())
@@ -2624,7 +2671,7 @@ fn test_activation_succeeds_when_referral_pool_is_empty() {
 
     client.initialize(&admin);
     client.set_multisig_admin(&admin, &admin);
-    client.whitelist_asset(&admin, &collateral_asset);
+    whitelist_and_price_asset(&env, &client, &admin, &collateral_asset, PRICE_PRECISION);
 
     let token_id = env
         .register_stellar_asset_contract_v2(admin.clone())
@@ -2802,3 +2849,69 @@ fn test_sweep_amount_exceeding_balance_rejected() {
     // Attempting to sweep 200 tokens must fail
     client.sweep_tokens(&admin, &unsupported_token, &recipient, &200);
 }
+
+// ─── Fail-closed collateral pricing tests (Issue #349) ──────────────────────
+
+#[test]
+#[should_panic(expected = "No active oracle price available for collateral asset")]
+fn test_collateral_valuation_fails_closed_when_oracle_not_configured() {
+    let (env, contract_id, _admin, borrower, asset_a, _asset_b) = setup_multi_collateral();
+    let client = LendingContractClient::new(&env, &contract_id);
+
+    // asset_a is whitelisted by setup_multi_collateral, but has NO oracle config
+    client.deposit_collateral(&borrower, &asset_a, &10_000_0000000);
+
+    // Must fail closed with panic instead of 1:1 fallback
+    client.get_borrowing_power(&borrower);
+}
+
+#[test]
+#[should_panic(expected = "No active oracle price available for collateral asset")]
+fn test_collateral_valuation_fails_closed_when_oracle_enabled_without_prices() {
+    let (env, contract_id, admin, borrower, asset_a, _asset_b) = setup_multi_collateral();
+    let client = LendingContractClient::new(&env, &contract_id);
+
+    // Oracle is marked enabled, but no price samples and no TWAP posted
+    client.set_asset_collateral_config(
+        &admin,
+        &asset_a,
+        &AssetCollateralConfig {
+            collateral_factor_bps: 8000,
+            has_price_oracle: true,
+            volatility_bps: 0,
+        },
+    );
+
+    client.deposit_collateral(&borrower, &asset_a, &10_000_0000000);
+
+    // Must fail closed
+    client.get_borrowing_power(&borrower);
+}
+
+#[test]
+#[should_panic(expected = "No active oracle price available for collateral asset")]
+fn test_create_loan_request_fails_closed_without_oracle_prices() {
+    let (env, contract_id, _admin, borrower, asset_a, _asset_b) = setup_multi_collateral();
+    let client = LendingContractClient::new(&env, &contract_id);
+
+    // Asset has no oracle configured
+    client.create_loan_request(
+        &borrower,
+        &LoanRequestInput {
+            amount: 1_000_0000000,
+            duration_days: 30,
+            interest_rate_bps: 1000,
+            max_loan_amount: 100_000_0000000,
+            collateral_entries: vec![
+                &env,
+                CollateralEntry {
+                    asset: asset_a.clone(),
+                    amount: 100_000_0000000,
+                },
+            ],
+            rate_model: InterestRateModel::Fixed,
+            reputation_tier: 0,
+        },
+    );
+}
+

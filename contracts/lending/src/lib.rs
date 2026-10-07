@@ -1833,10 +1833,10 @@ impl LendingContract {
     /// But for collateral valuation, we use a simpler scheme:
     ///   - If the asset has an oracle, price is posted by the oracle
     ///   - If not, price = PRICE_PRECISION (i.e. face value = 1.0 base unit per asset unit)
+    /// Get the price of an asset in base asset units (stroops-equivalent).
     ///
-    /// For now, without a live oracle, all assets are valued at face value (1:1).
-    /// This still allows testing the multi-collateral framework with different
-    /// collateral factors.
+    /// Requires an active price feed from the authorized oracle or TWAP fallback.
+    /// Fails closed if no oracle data is registered for the collateral asset.
     fn get_asset_price(env: &Env, asset: &Address, config: &AssetCollateralConfig) -> i128 {
         if config.has_price_oracle {
             let samples: Vec<i128> = env
@@ -1858,8 +1858,7 @@ impl LendingContract {
             }
         }
 
-        // No oracle or no live price data — fall back to face value.
-        PRICE_PRECISION
+        panic!("No active oracle price available for collateral asset");
     }
 
     fn median_price(env: &Env, prices: &Vec<i128>) -> i128 {
