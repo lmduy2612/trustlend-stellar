@@ -19,6 +19,9 @@ concurrency:
   group: keepers
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   run:
     name: Trigger cron endpoints
