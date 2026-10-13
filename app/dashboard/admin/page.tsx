@@ -206,7 +206,7 @@ export default async function AdminDashboardPage() {
                     <tbody>
                       {profiles.length === 0 ? (
                         <tr><td colSpan={6} style={{ textAlign: "center", padding: "1.5rem", opacity: 0.5 }}>No users found.</td></tr>
-                      ) : profiles.slice(0, 1).map((p) => (
+                      ) : profiles.map((p) => (
                         <tr key={String(p.id)}>
                           <td style={{ fontFamily: "monospace", fontSize: "0.8rem" }}>{String(p.id).slice(0,8)}</td>
                           <td><span style={{ textTransform: "capitalize", fontWeight: 600 }}>{String(p.role)}</span></td>
