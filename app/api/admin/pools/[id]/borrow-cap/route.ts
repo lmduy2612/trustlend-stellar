@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { enforceRouteRateLimit } from "@/lib/rate-limit";
-import { requireAuthenticatedUser } from "@/lib/auth/session";
+import { requireApiAdmin, UnauthorizedError } from "@/lib/auth/session";
 import { setPoolBorrowCap } from "@/app/actions/admin-pools";
 
 /**
  * PUT /api/admin/pools/[id]/borrow-cap
  *
  * Set or clear the borrow cap for a lending pool.
- * Admin-only. Requires a valid session with role='admin'.
+ * Admin-only. Requires a valid session with role='admin' and allowlist check.
  *
  * Body: { borrowCap: number | null }
  *   - number: sets a hard ceiling (in XLM/USDC) on total_borrowed
@@ -30,7 +30,7 @@ export async function PUT(
     if (rateLimited) return rateLimited;
 
     // ── Auth: admin only ─────────────────────────────────────────────────────
-    await requireAuthenticatedUser("admin");
+    await requireApiAdmin();
 
     const { id: poolId } = await params;
     if (!poolId) {
@@ -81,6 +81,10 @@ export async function PUT(
       { status: 200 }
     );
   } catch (error) {
+    if (error instanceof UnauthorizedError) {
+      const status = error.message.includes("Authentication required") ? 401 : 403;
+      return NextResponse.json({ success: false, error: error.message }, { status });
+    }
     const message =
       error instanceof Error ? error.message : "Internal Server Error";
     return NextResponse.json({ error: message }, { status: 500 });
