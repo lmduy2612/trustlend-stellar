@@ -9,6 +9,7 @@ import {
   Address,
   nativeToScVal,
   scValToNative,
+  StrKey,
 } from "@stellar/stellar-sdk";
 import { signTransactionWithWallet } from "@/lib/stellar/wallet";
 import { redis } from "@/lib/services/redis";
@@ -141,8 +142,13 @@ async function sorobanRpc<T = Record<string, unknown>>(
  * Fetch account sequence number from Horizon REST API.
  * Soroban RPC has no getAccount method — account data lives on Horizon.
  */
-async function getAccountSequence(address: string): Promise<string> {
-  const res = await fetch(`${HORIZON_URL}/accounts/${address}`);
+export async function getAccountSequence(address: string): Promise<string> {
+  if (!address || !StrKey.isValidEd25519PublicKey(address)) {
+    throw new Error(`Invalid Stellar address format: ${address}`);
+  }
+
+  const safeAddress = encodeURIComponent(address);
+  const res = await fetch(`${HORIZON_URL}/accounts/${safeAddress}`);
   if (!res.ok) {
     if (res.status === 404) {
       throw new Error(
