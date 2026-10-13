@@ -54,9 +54,11 @@ pub enum DataKey {
     MultisigAdmins,
     MultisigThreshold,
     IsPaused,
-    PauseSigner(Address),
+    PauseEpoch,
+    PauseSigner(Address, u32),
     PauseSignerCount,
-    UnpauseSigner(Address),
+    UnpauseEpoch,
+    UnpauseSigner(Address, u32),
     UnpauseSignerCount,
 }
 
@@ -111,6 +113,22 @@ impl DefaultManagementContract {
         env.storage().instance().set(&DataKey::IsPaused, &false);
         env.storage().instance().set(&DataKey::PauseSignerCount, &0u32);
         env.storage().instance().set(&DataKey::UnpauseSignerCount, &0u32);
+        let cur_pause_epoch: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PauseEpoch)
+            .unwrap_or(0);
+        let cur_unpause_epoch: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UnpauseEpoch)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::PauseEpoch, &cur_pause_epoch);
+        env.storage()
+            .instance()
+            .set(&DataKey::UnpauseEpoch, &cur_unpause_epoch);
     }
 
     pub fn pause(env: Env, caller: Address) {
@@ -126,7 +144,13 @@ impl DefaultManagementContract {
             panic!("Contract is already paused");
         }
 
-        let signer_key = DataKey::PauseSigner(caller.clone());
+        let epoch: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PauseEpoch)
+            .unwrap_or(0);
+
+        let signer_key = DataKey::PauseSigner(caller.clone(), epoch);
         if env.storage().instance().has(&signer_key) {
             panic!("Signer has already authorised pause");
         }
@@ -146,6 +170,9 @@ impl DefaultManagementContract {
         if new_count >= threshold {
             env.storage().instance().set(&DataKey::IsPaused, &true);
             env.storage().instance().set(&DataKey::PauseSignerCount, &0u32);
+            env.storage()
+                .instance()
+                .set(&DataKey::PauseEpoch, &(epoch + 1));
             env.events().publish(
                 (symbol_short!("defmgmt"), symbol_short!("paused")),
                 (),
@@ -166,7 +193,13 @@ impl DefaultManagementContract {
             panic!("Contract is not paused");
         }
 
-        let signer_key = DataKey::UnpauseSigner(caller.clone());
+        let epoch: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UnpauseEpoch)
+            .unwrap_or(0);
+
+        let signer_key = DataKey::UnpauseSigner(caller.clone(), epoch);
         if env.storage().instance().has(&signer_key) {
             panic!("Signer has already authorised unpause");
         }
@@ -186,6 +219,9 @@ impl DefaultManagementContract {
         if new_count >= threshold {
             env.storage().instance().set(&DataKey::IsPaused, &false);
             env.storage().instance().set(&DataKey::UnpauseSignerCount, &0u32);
+            env.storage()
+                .instance()
+                .set(&DataKey::UnpauseEpoch, &(epoch + 1));
             env.events().publish(
                 (symbol_short!("defmgmt"), symbol_short!("unpaused")),
                 (),
@@ -218,6 +254,20 @@ impl DefaultManagementContract {
         env.storage()
             .instance()
             .get(&DataKey::PauseSignerCount)
+            .unwrap_or(0)
+    }
+
+    pub fn get_pause_epoch(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::PauseEpoch)
+            .unwrap_or(0)
+    }
+
+    pub fn get_unpause_epoch(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::UnpauseEpoch)
             .unwrap_or(0)
     }
 

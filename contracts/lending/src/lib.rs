@@ -215,12 +215,16 @@ pub enum DataKey {
     MultisigThreshold,
     /// Whether the contract is paused
     IsPaused,
-    /// Whether a given signer has already called pause (dedup)
-    PauseSigner(Address),
+    /// Pause epoch/cycle id
+    PauseEpoch,
+    /// Whether a given signer has already called pause (dedup per epoch)
+    PauseSigner(Address, u32),
     /// Number of unique signers who have called pause
     PauseSignerCount,
-    /// Whether a given signer has already called unpause (dedup)
-    UnpauseSigner(Address),
+    /// Unpause epoch/cycle id
+    UnpauseEpoch,
+    /// Whether a given signer has already called unpause (dedup per epoch)
+    UnpauseSigner(Address, u32),
     /// Number of unique signers who have called unpause
     UnpauseSignerCount,
     /// Flash loan fee bps
@@ -350,6 +354,22 @@ impl LendingContract {
         env.storage()
             .instance()
             .set(&DataKey::UnpauseSignerCount, &0u32);
+        let cur_pause_epoch: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PauseEpoch)
+            .unwrap_or(0);
+        let cur_unpause_epoch: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UnpauseEpoch)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::PauseEpoch, &cur_pause_epoch);
+        env.storage()
+            .instance()
+            .set(&DataKey::UnpauseEpoch, &cur_unpause_epoch);
     }
 
     /// Multi-sig pause: requires `threshold` unique admin signatures.
@@ -367,8 +387,14 @@ impl LendingContract {
             panic!("Contract is already paused");
         }
 
-        // Dedup: only count each signer once
-        let signer_key = DataKey::PauseSigner(caller.clone());
+        let epoch: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PauseEpoch)
+            .unwrap_or(0);
+
+        // Dedup: only count each signer once per epoch
+        let signer_key = DataKey::PauseSigner(caller.clone(), epoch);
         if env.storage().instance().has(&signer_key) {
             panic!("Signer has already authorised pause");
         }
@@ -391,6 +417,9 @@ impl LendingContract {
             env.storage()
                 .instance()
                 .set(&DataKey::PauseSignerCount, &0u32);
+            env.storage()
+                .instance()
+                .set(&DataKey::PauseEpoch, &(epoch + 1));
             env.events()
                 .publish((symbol_short!("lending"), symbol_short!("paused")), ());
         }
@@ -410,7 +439,13 @@ impl LendingContract {
             panic!("Contract is not paused");
         }
 
-        let signer_key = DataKey::UnpauseSigner(caller.clone());
+        let epoch: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UnpauseEpoch)
+            .unwrap_or(0);
+
+        let signer_key = DataKey::UnpauseSigner(caller.clone(), epoch);
         if env.storage().instance().has(&signer_key) {
             panic!("Signer has already authorised unpause");
         }
@@ -432,6 +467,9 @@ impl LendingContract {
             env.storage()
                 .instance()
                 .set(&DataKey::UnpauseSignerCount, &0u32);
+            env.storage()
+                .instance()
+                .set(&DataKey::UnpauseEpoch, &(epoch + 1));
             env.events()
                 .publish((symbol_short!("lending"), symbol_short!("unpaused")), ());
         }
@@ -462,6 +500,20 @@ impl LendingContract {
         env.storage()
             .instance()
             .get(&DataKey::PauseSignerCount)
+            .unwrap_or(0)
+    }
+
+    pub fn get_pause_epoch(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::PauseEpoch)
+            .unwrap_or(0)
+    }
+
+    pub fn get_unpause_epoch(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::UnpauseEpoch)
             .unwrap_or(0)
     }
 

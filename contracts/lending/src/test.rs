@@ -926,6 +926,48 @@ fn test_duplicate_unpause_signer_rejected() {
 }
 
 #[test]
+fn test_multiple_sequential_pause_unpause_cycles_succeed() {
+    let (env, contract_id, admin, _borrower, _collateral_asset, signer1, _signer2) =
+        setup_with_multisig();
+    let client = LendingContractClient::new(&env, &contract_id);
+
+    // Initial state
+    assert!(!client.is_paused());
+    assert_eq!(client.get_pause_epoch(), 0);
+    assert_eq!(client.get_unpause_epoch(), 0);
+
+    // Cycle 1: Pause
+    client.pause(&admin);
+    assert!(!client.is_paused());
+    client.pause(&signer1);
+    assert!(client.is_paused());
+    assert_eq!(client.get_pause_epoch(), 1);
+    assert_eq!(client.get_pause_signer_count(), 0);
+
+    // Cycle 1: Unpause
+    client.unpause(&admin);
+    assert!(client.is_paused());
+    client.unpause(&signer1);
+    assert!(!client.is_paused());
+    assert_eq!(client.get_unpause_epoch(), 1);
+
+    // Cycle 2: Pause again using EXACT same admin and signer1
+    client.pause(&admin);
+    assert!(!client.is_paused());
+    client.pause(&signer1);
+    assert!(client.is_paused());
+    assert_eq!(client.get_pause_epoch(), 2);
+    assert_eq!(client.get_pause_signer_count(), 0);
+
+    // Cycle 2: Unpause again using EXACT same admin and signer1
+    client.unpause(&admin);
+    assert!(client.is_paused());
+    client.unpause(&signer1);
+    assert!(!client.is_paused());
+    assert_eq!(client.get_unpause_epoch(), 2);
+}
+
+#[test]
 #[should_panic(expected = "Unauthorised: caller is not a multisig admin")]
 fn test_non_admin_cannot_pause() {
     let (env, contract_id, _admin, _borrower, _collateral_asset, _signer1, _signer2) =

@@ -468,6 +468,45 @@ fn test_rep_multiple_signers_independently() {
 }
 
 #[test]
+fn test_rep_multiple_sequential_pause_unpause_cycles_succeed() {
+    let (env, contract_id, admin, _borrower, signer1) = setup_with_multisig();
+    let client = BorrowerReputationContractClient::new(&env, &contract_id);
+
+    // Initial state
+    assert!(!client.is_paused());
+    assert_eq!(client.get_pause_epoch(), 0);
+    assert_eq!(client.get_unpause_epoch(), 0);
+
+    // Cycle 1: Pause & Unpause
+    client.pause(&admin);
+    assert!(!client.is_paused());
+    client.pause(&signer1);
+    assert!(client.is_paused());
+    assert_eq!(client.get_pause_epoch(), 1);
+    assert_eq!(client.get_pause_signer_count(), 0);
+
+    client.unpause(&admin);
+    assert!(client.is_paused());
+    client.unpause(&signer1);
+    assert!(!client.is_paused());
+    assert_eq!(client.get_unpause_epoch(), 1);
+
+    // Cycle 2: Pause & Unpause with exact same signers
+    client.pause(&admin);
+    assert!(!client.is_paused());
+    client.pause(&signer1);
+    assert!(client.is_paused());
+    assert_eq!(client.get_pause_epoch(), 2);
+    assert_eq!(client.get_pause_signer_count(), 0);
+
+    client.unpause(&admin);
+    assert!(client.is_paused());
+    client.unpause(&signer1);
+    assert!(!client.is_paused());
+    assert_eq!(client.get_unpause_epoch(), 2);
+}
+
+#[test]
 fn test_zk_tier_upgrade_success() {
     let (env, contract_id, admin, borrower) = setup();
     let client = BorrowerReputationContractClient::new(&env, &contract_id);

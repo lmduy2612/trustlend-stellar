@@ -281,3 +281,42 @@ fn test_escrow_non_admin_cannot_pause() {
     let random = Address::generate(&env);
     client.pause(&random);
 }
+
+#[test]
+fn test_escrow_multiple_sequential_pause_unpause_cycles_succeed() {
+    let (env, contract_id, admin, _lender, _borrower, signer1) = setup_with_multisig();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    // Initial state
+    assert!(!client.is_paused());
+    assert_eq!(client.get_pause_epoch(), 0);
+    assert_eq!(client.get_unpause_epoch(), 0);
+
+    // Cycle 1: Pause & Unpause
+    client.pause(&admin);
+    assert!(!client.is_paused());
+    client.pause(&signer1);
+    assert!(client.is_paused());
+    assert_eq!(client.get_pause_epoch(), 1);
+    assert_eq!(client.get_pause_signer_count(), 0);
+
+    client.unpause(&admin);
+    assert!(client.is_paused());
+    client.unpause(&signer1);
+    assert!(!client.is_paused());
+    assert_eq!(client.get_unpause_epoch(), 1);
+
+    // Cycle 2: Pause & Unpause with exact same signers
+    client.pause(&admin);
+    assert!(!client.is_paused());
+    client.pause(&signer1);
+    assert!(client.is_paused());
+    assert_eq!(client.get_pause_epoch(), 2);
+    assert_eq!(client.get_pause_signer_count(), 0);
+
+    client.unpause(&admin);
+    assert!(client.is_paused());
+    client.unpause(&signer1);
+    assert!(!client.is_paused());
+    assert_eq!(client.get_unpause_epoch(), 2);
+}
