@@ -5,7 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 type WindowUnit = "s" | "m" | "h";
 type WindowString = `${number} ${WindowUnit}`;
 
-type RateLimitPolicy = {
+export type RateLimitPolicy = {
   limit: number;
   window: WindowString;
 };
@@ -324,3 +324,38 @@ export async function enforceGlobalApiRateLimit(request: NextRequest) {
     "Too many requests, please slow down."
   );
 }
+
+/**
+ * Enforce a custom rate limit on a specific identifier (such as a user ID or wallet address).
+ */
+export async function enforceCustomRateLimit(
+  identifier: string,
+  bucket: string,
+  policy: RateLimitPolicy = { limit: 10, window: "1 m" },
+  message = "Too many requests. Please try again later."
+): Promise<NextResponse | null> {
+  const fullIdentifier = `${bucket}:${identifier}`;
+  const result = redis
+    ? await getUpstashRateLimit(fullIdentifier, bucket, policy)
+    : getLocalRateLimit(fullIdentifier, policy);
+
+  if (!result || result.success) {
+    return null;
+  }
+
+  const retryAfterSeconds = Math.max(1, Math.ceil((result.reset - Date.now()) / 1_000));
+
+  return NextResponse.json(
+    { error: message },
+    {
+      status: 429,
+      headers: {
+        "Retry-After": String(retryAfterSeconds),
+        "X-RateLimit-Limit": String(result.limit),
+        "X-RateLimit-Remaining": String(result.remaining),
+        "X-RateLimit-Reset": String(result.reset),
+      },
+    }
+  );
+}
+
