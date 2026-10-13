@@ -164,6 +164,11 @@ export async function generateSdkToken(
   };
 }
 
+export function isWebhookConfigured(): boolean {
+  const { webhookSecret } = getConfig();
+  return Boolean(webhookSecret);
+}
+
 /**
  * Verify the HMAC-SHA256 digest sent by SumSub on every webhook POST.
  * Returns true if the signature is valid.
@@ -174,9 +179,13 @@ export function verifyWebhookSignature(
 ): boolean {
   const { webhookSecret } = getConfig();
   if (!webhookSecret) {
-    // In dev mode (no secret configured) skip verification but log a warning
-    console.warn("[KYC] SUMSUB_WEBHOOK_SECRET is not set — skipping signature verification in dev mode");
-    return true;
+    if (process.env.NODE_ENV === "development") {
+      // In dev mode (no secret configured) skip verification but log a warning
+      console.warn("[KYC] SUMSUB_WEBHOOK_SECRET is not set — skipping signature verification in dev mode");
+      return true;
+    }
+    console.error("[KYC] SUMSUB_WEBHOOK_SECRET is not set in non-development environment — failing closed");
+    return false;
   }
 
   const expected = crypto

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import crypto from "node:crypto";
 import { NextRequest } from "next/server";
 import {
+  verifyWebhookSignature,
   mapProviderStatus,
   extractRejectionReason,
 } from "@/lib/kyc/provider";
@@ -194,6 +195,7 @@ describe("POST /api/kyc/webhook", () => {
   });
 
   it("accepts the webhook in dev mode when no webhook secret is configured", async () => {
+    process.env.NODE_ENV = "development";
     delete process.env.SUMSUB_WEBHOOK_SECRET;
     primeUpdates(1);
     const body = JSON.stringify(reviewedPayload());
@@ -201,6 +203,26 @@ describe("POST /api/kyc/webhook", () => {
     const response = await POST(webhookRequest(body, ""));
 
     expect(response.status).toBe(200);
+  });
+
+  it("fails closed (503) in production when SUMSUB_WEBHOOK_SECRET is not configured", async () => {
+    process.env.NODE_ENV = "production";
+    delete process.env.SUMSUB_WEBHOOK_SECRET;
+    const body = JSON.stringify(reviewedPayload());
+
+    const response = await POST(webhookRequest(body, ""));
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      error: "Webhook signature verification service unconfigured",
+    });
+    expect(updateCount()).toBe(0);
+  });
+
+  it("fails closed in verifyWebhookSignature when secret is missing in production", () => {
+    process.env.NODE_ENV = "production";
+    delete process.env.SUMSUB_WEBHOOK_SECRET;
+    expect(verifyWebhookSignature("body", "sig")).toBe(false);
   });
 
   it("serves a health check on GET", async () => {

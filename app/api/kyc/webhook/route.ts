@@ -4,6 +4,7 @@ import { eq, sql } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
 import { profiles, reputationSnapshots } from "@/lib/db/schema";
 import {
+  isWebhookConfigured,
   verifyWebhookSignature,
   mapProviderStatus,
   extractRejectionReason,
@@ -33,7 +34,15 @@ export async function POST(request: NextRequest) {
     request.headers.get("x-hmac-signature") ??
     "";
 
-  // ── 2. Verify HMAC signature ───────────────────────────────────────────────
+  // ── 2. Verify HMAC signature (fail closed in non-development environments) ───
+  if (!isWebhookConfigured() && process.env.NODE_ENV !== "development") {
+    console.error("[KYC Webhook] SUMSUB_WEBHOOK_SECRET is not configured in non-development environment — rejecting request");
+    return NextResponse.json(
+      { error: "Webhook signature verification service unconfigured" },
+      { status: 503 }
+    );
+  }
+
   if (!verifyWebhookSignature(rawBody, digestHeader)) {
     console.error("[KYC Webhook] Invalid signature — rejecting request");
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
