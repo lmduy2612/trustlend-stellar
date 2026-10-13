@@ -62,7 +62,7 @@ fn test_record_default() {
 
 #[test]
 fn test_insurance_payout() {
-    let (env, contract_id, admin) = setup();
+    let (env, contract_id, admin, _signer1, _borrower) = setup_with_multisig();
     let client = DefaultManagementContractClient::new(&env, &contract_id);
 
     let lender = Address::generate(&env);
@@ -74,11 +74,59 @@ fn test_insurance_payout() {
 #[test]
 #[should_panic(expected = "Insufficient insurance funds")]
 fn test_insurance_payout_insufficient_funds() {
-    let (env, contract_id, admin) = setup();
+    let (env, contract_id, admin, _signer1, _borrower) = setup_with_multisig();
     let client = DefaultManagementContractClient::new(&env, &contract_id);
 
     let lender = Address::generate(&env);
     client.trigger_insurance_payout(&admin, &1, &lender, &20_000_000);
+}
+
+#[test]
+#[should_panic(expected = "Multisig not configured")]
+fn test_insurance_payout_before_multisig_configured_panics() {
+    let (env, contract_id, admin) = setup();
+    let client = DefaultManagementContractClient::new(&env, &contract_id);
+
+    let lender = Address::generate(&env);
+    client.trigger_insurance_payout(&admin, &1, &lender, &1_000_000);
+}
+
+#[test]
+#[should_panic(expected = "Unauthorised: caller is not a multisig admin")]
+fn test_single_admin_cannot_trigger_insurance_payout_after_set_multisig_admin() {
+    let (env, contract_id, admin) = setup();
+    let client = DefaultManagementContractClient::new(&env, &contract_id);
+
+    let multisig = Address::generate(&env);
+    client.set_multisig_admin(&admin, &multisig);
+
+    let lender = Address::generate(&env);
+    // Single initial admin is no longer authorized to move insurance funds unilaterally
+    client.trigger_insurance_payout(&admin, &1, &lender, &1_000_000);
+}
+
+#[test]
+fn test_multisig_admin_can_trigger_insurance_payout_after_set_multisig_admin() {
+    let (env, contract_id, admin) = setup();
+    let client = DefaultManagementContractClient::new(&env, &contract_id);
+
+    let multisig = Address::generate(&env);
+    client.set_multisig_admin(&admin, &multisig);
+
+    let lender = Address::generate(&env);
+    client.trigger_insurance_payout(&multisig, &1, &lender, &1_000_000);
+    assert_eq!(client.get_insurance_balance(), 9_000_000);
+}
+
+#[test]
+#[should_panic(expected = "Unauthorised: caller is not a multisig admin")]
+fn test_unauthorised_caller_cannot_trigger_insurance_payout() {
+    let (env, contract_id, _admin, _signer1, _borrower) = setup_with_multisig();
+    let client = DefaultManagementContractClient::new(&env, &contract_id);
+
+    let outsider = Address::generate(&env);
+    let lender = Address::generate(&env);
+    client.trigger_insurance_payout(&outsider, &1, &lender, &1_000_000);
 }
 
 // ─── Pausable / Multi-sig tests ──────────────────────────────────────────────
