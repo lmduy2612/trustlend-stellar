@@ -336,7 +336,7 @@ export async function getActiveRateConfig(
 
     return { config: rowToConfig(row as ConfigRow), usedFallback: false };
   } catch (error) {
-    console.error(`Failed to load active ${rateModel} rate config, using defaults:`, error);
+    console.error("Failed to load active rate config, using defaults:", rateModel, error);
     return { config: DEFAULT_RATE_CONFIGS[rateModel], usedFallback: true };
   }
 }

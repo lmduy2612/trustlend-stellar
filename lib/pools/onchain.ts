@@ -59,7 +59,7 @@ export async function syncPoolOnchain(db: Db, poolId: string): Promise<PoolSyncO
     return { attempted: true, ok: true, txHash: result.hash, onchainPoolId: pool.onchainPoolId };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[onchain] update_pool_state failed for pool ${poolId}:`, message);
+    console.error("[onchain] update_pool_state failed for pool:", poolId, message);
     return { attempted: true, ok: false, error: message };
   }
 }

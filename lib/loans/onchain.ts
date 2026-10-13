@@ -108,7 +108,7 @@ export async function activateFundedLoanOnchain(params: {
     return { attempted: true, ok: true, txHash: hash, status: "Active" };
   } catch (error) {
     const message = errorMessage(error);
-    console.error(`[onchain] activate_loan failed for loan ${loanId}:`, message);
+    console.error("[onchain] activate_loan failed for loan:", loanId, message);
     await mergeLoanMetadata(db, loanId, {
       onchain_approve_tx: params.approveTxHash,
       onchain_error: `activate: ${message}`,
@@ -157,7 +157,7 @@ export async function recordRepaymentOnchain(params: {
     return { attempted: true, ok: true, txHash: hash, status };
   } catch (error) {
     const message = errorMessage(error);
-    console.error(`[onchain] record_payment failed for loan ${loanId}:`, message);
+    console.error("[onchain] record_payment failed for loan:", loanId, message);
     await mergeLoanMetadata(db, loanId, { onchain_error: `record_payment: ${message}` }).catch(() => {});
     return { attempted: true, ok: false, error: message };
   }
