@@ -6,6 +6,7 @@ import {
   createDryRunPublisher,
 } from "@/scripts/price-oracle-keeper";
 import { createDefaultSources } from "@/lib/oracle/sources";
+import { requireCronAuth } from "@/lib/auth/cron";
 
 /**
  * POST/GET /api/cron/price-oracle
@@ -25,13 +26,8 @@ import { createDefaultSources } from "@/lib/oracle/sources";
  * straight through to the on-chain TWAP.
  */
 export async function POST(request: NextRequest) {
-  const secret = process.env.CRON_SECRET;
-  if (secret) {
-    const authHeader = request.headers.get("authorization");
-    if (authHeader !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-  }
+  const authError = requireCronAuth(request);
+  if (authError) return authError;
 
   const start = Date.now();
   try {

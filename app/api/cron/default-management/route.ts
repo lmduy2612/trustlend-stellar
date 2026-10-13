@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runDefaultManagement } from "@/lib/scheduler/default-management";
+import { requireCronAuth } from "@/lib/auth/cron";
 
 /**
  * POST/GET /api/cron/default-management
@@ -12,14 +13,8 @@ import { runDefaultManagement } from "@/lib/scheduler/default-management";
  * Secured via CRON_SECRET in the Authorization header (`Bearer <secret>`).
  */
 export async function POST(request: NextRequest) {
-  // Verify the caller is the trusted scheduler.
-  const secret = process.env.CRON_SECRET;
-  if (secret) {
-    const authHeader = request.headers.get("authorization");
-    if (authHeader !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-  }
+  const authError = requireCronAuth(request);
+  if (authError) return authError;
 
   const start = Date.now();
   try {

@@ -66,4 +66,29 @@ describe("POST & GET /api/cron/reputation-scoring", () => {
     const response = await GET(req);
     expect(response.status).toBe(200);
   });
+
+  it("runs without auth in development mode when CRON_SECRET is missing", async () => {
+    process.env.NODE_ENV = "development";
+    delete process.env.CRON_SECRET;
+    mockRunDailyReputationRecalculation.mockResolvedValue(SUMMARY);
+
+    const req = new NextRequest("http://localhost/api/cron/reputation-scoring", {
+      method: "POST",
+    });
+    const response = await POST(req);
+    expect(response.status).toBe(200);
+    expect(mockRunDailyReputationRecalculation).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed with 500 in production when CRON_SECRET is missing", async () => {
+    process.env.NODE_ENV = "production";
+    delete process.env.CRON_SECRET;
+
+    const req = new NextRequest("http://localhost/api/cron/reputation-scoring", {
+      method: "POST",
+    });
+    const response = await POST(req);
+    expect(response.status).toBe(500);
+    expect(mockRunDailyReputationRecalculation).not.toHaveBeenCalled();
+  });
 });

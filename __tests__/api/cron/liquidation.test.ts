@@ -86,6 +86,7 @@ describe("POST /api/cron/liquidation", () => {
   });
 
   it("runs without auth when CRON_SECRET is unset (dev mode)", async () => {
+    process.env.NODE_ENV = "development";
     delete process.env.CRON_SECRET;
     mockRunLiquidationKeeper.mockResolvedValue(SUMMARY);
 
@@ -93,6 +94,16 @@ describe("POST /api/cron/liquidation", () => {
 
     expect(response.status).toBe(200);
     expect(mockRunLiquidationKeeper).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed with 500 when CRON_SECRET is unset in production", async () => {
+    process.env.NODE_ENV = "production";
+    delete process.env.CRON_SECRET;
+
+    const response = await POST(new NextRequest("http://localhost/api/cron/liquidation"));
+
+    expect(response.status).toBe(500);
+    expect(mockRunLiquidationKeeper).not.toHaveBeenCalled();
   });
 
   it("returns 500 when the keeper run throws", async () => {
